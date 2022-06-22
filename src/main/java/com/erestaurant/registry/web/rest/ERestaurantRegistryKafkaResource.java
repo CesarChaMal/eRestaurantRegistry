@@ -1,22 +1,23 @@
 package com.erestaurant.registry.web.rest;
 
-import com.erestaurant.registry.config.KafkaProperties;
-import java.time.Instant;
-import java.util.List;
+import com.erestaurant.registry.config.KafkaSseConsumer;
+import com.erestaurant.registry.config.KafkaSseProducer;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.ExecutionException;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.cloud.stream.annotation.StreamListener;
+import org.springframework.http.ResponseEntity;
+import org.springframework.messaging.Message;
+import org.springframework.messaging.MessageChannel;
+import org.springframework.messaging.MessageHeaders;
+import org.springframework.messaging.support.GenericMessage;
+import org.springframework.util.MimeTypeUtils;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.kafka.receiver.KafkaReceiver;
-import reactor.kafka.receiver.ReceiverOptions;
-import reactor.kafka.sender.KafkaSender;
-import reactor.kafka.sender.SenderOptions;
-import reactor.kafka.sender.SenderRecord;
-import reactor.kafka.sender.SenderResult;
+import reactor.core.publisher.Sinks;
 
 @RestController
 @RequestMapping("/api/e-restaurant-registry-kafka")
@@ -24,54 +25,32 @@ public class ERestaurantRegistryKafkaResource {
 
     private final Logger log = LoggerFactory.getLogger(ERestaurantRegistryKafkaResource.class);
 
-    private final KafkaProperties kafkaProperties;
-    private KafkaSender<String, String> sender;
+    private final MessageChannel output;
+    private Sinks.Many<Message<String>> sink = Sinks.many().unicast().onBackpressureBuffer();
 
-    public ERestaurantRegistryKafkaResource(KafkaProperties kafkaProperties) {
-        this.kafkaProperties = kafkaProperties;
-        this.sender = KafkaSender.create(SenderOptions.create(kafkaProperties.getProducerProps()));
+    public ERestaurantRegistryKafkaResource(@Qualifier(KafkaSseProducer.CHANNELNAME) MessageChannel output) {
+        this.output = output;
     }
 
-    @PostMapping("/publish/{topic}")
-    public Mono<PublishResult> publish(
-        @PathVariable String topic,
-        @RequestParam String message,
-        @RequestParam(required = false) String key
-    ) {
-        log.debug("REST request to send to Kafka topic {} with key {} the message : {}", topic, key, message);
-        return Mono
-            .just(SenderRecord.create(topic, null, null, key, message, null))
-            .as(sender::send)
-            .next()
-            .map(SenderResult::recordMetadata)
-            .map(metadata ->
-                new PublishResult(metadata.topic(), metadata.partition(), metadata.offset(), Instant.ofEpochMilli(metadata.timestamp()))
-            );
+    @PostMapping("/publish")
+    public Mono<ResponseEntity<Void>> publish(@RequestParam String message) {
+        log.debug("REST request the message : {} to send to Kafka topic", message);
+        Map<String, Object> map = new HashMap<>();
+        map.put(MessageHeaders.CONTENT_TYPE, MimeTypeUtils.TEXT_PLAIN_VALUE);
+        MessageHeaders headers = new MessageHeaders(map);
+        output.send(new GenericMessage<>(message, headers));
+        return Mono.just(ResponseEntity.noContent().build());
     }
 
     @GetMapping("/consume")
-    public Flux<String> consume(@RequestParam("topic") List<String> topics, @RequestParam Map<String, String> consumerParams) {
-        log.debug("REST request to consume records from Kafka topics {}", topics);
-        Map<String, Object> consumerProps = kafkaProperties.getConsumerProps();
-        consumerProps.putAll(consumerParams);
-        consumerProps.remove("topic");
-
-        ReceiverOptions<String, String> receiverOptions = ReceiverOptions.<String, String>create(consumerProps).subscription(topics);
-        return KafkaReceiver.create(receiverOptions).receive().map(ConsumerRecord::value);
+    public Flux<String> consume() {
+        log.debug("REST request to consume records from Kafka topics");
+        return sink.asFlux().map(m -> m.getPayload());
     }
 
-    private static class PublishResult {
-
-        public final String topic;
-        public final int partition;
-        public final long offset;
-        public final Instant timestamp;
-
-        private PublishResult(String topic, int partition, long offset, Instant timestamp) {
-            this.topic = topic;
-            this.partition = partition;
-            this.offset = offset;
-            this.timestamp = timestamp;
-        }
+    @StreamListener(value = KafkaSseConsumer.CHANNELNAME, copyHeaders = "false")
+    public void consume(Message<String> message) {
+        log.debug("Got message from kafka stream: {}", message.getPayload());
+        sink.emitNext(message, Sinks.EmitFailureHandler.FAIL_FAST);
     }
 }

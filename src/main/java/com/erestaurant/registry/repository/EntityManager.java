@@ -15,6 +15,7 @@ import org.springframework.data.r2dbc.mapping.OutboundRow;
 import org.springframework.data.r2dbc.query.UpdateMapper;
 import org.springframework.data.relational.core.mapping.RelationalPersistentEntity;
 import org.springframework.data.relational.core.query.Criteria;
+import org.springframework.data.relational.core.sql.Condition;
 import org.springframework.data.relational.core.sql.Conditions;
 import org.springframework.data.relational.core.sql.OrderByField;
 import org.springframework.data.relational.core.sql.Select;
@@ -72,14 +73,15 @@ public class EntityManager {
      * Creates an SQL select statement from the given fragment and pagination parameters.
      * @param selectFrom a representation of a select statement.
      * @param entityType the entity type which holds the table name.
-     * @param pageable page parameter, or null, if everything needs to be returned
+     * @param pageable page parameter, or null, if everything needs to be returned.
+     * @param where condition or null. The condition to apply as where clause.
      * @return sql select statement
      */
-    public String createSelect(SelectFromAndJoin selectFrom, Class<?> entityType, Pageable pageable, Criteria criteria) {
+    public String createSelect(SelectFromAndJoin selectFrom, Class<?> entityType, Pageable pageable, Condition where) {
         if (pageable != null) {
-            if (criteria != null) {
+            if (where != null) {
                 return createSelectImpl(
-                    selectFrom.limitOffset(pageable.getPageSize(), pageable.getOffset()).where(Conditions.just(criteria.toString())),
+                    selectFrom.limitOffset(pageable.getPageSize(), pageable.getOffset()).where(where),
                     entityType,
                     pageable.getSort()
                 );
@@ -91,8 +93,8 @@ public class EntityManager {
                 );
             }
         } else {
-            if (criteria != null) {
-                return createSelectImpl(selectFrom.where(Conditions.just(criteria.toString())), entityType, null);
+            if (where != null) {
+                return createSelectImpl(selectFrom.where(where), entityType, null);
             } else {
                 return createSelectImpl(selectFrom, entityType, null);
             }
@@ -104,13 +106,14 @@ public class EntityManager {
      * @param selectFrom a representation of a select statement.
      * @param entityType the entity type which holds the table name.
      * @param pageable page parameter, or null, if everything needs to be returned
+     * @param where condition or null. The condition to apply as where clause.
      * @return sql select statement
      */
-    public String createSelect(SelectFromAndJoinCondition selectFrom, Class<?> entityType, Pageable pageable, Criteria criteria) {
+    public String createSelect(SelectFromAndJoinCondition selectFrom, Class<?> entityType, Pageable pageable, Condition where) {
         if (pageable != null) {
-            if (criteria != null) {
+            if (where != null) {
                 return createSelectImpl(
-                    selectFrom.limitOffset(pageable.getPageSize(), pageable.getOffset()).where(Conditions.just(criteria.toString())),
+                    selectFrom.limitOffset(pageable.getPageSize(), pageable.getOffset()).where(where),
                     entityType,
                     pageable.getSort()
                 );
@@ -122,28 +125,21 @@ public class EntityManager {
                 );
             }
         } else {
-            if (criteria != null) {
-                return createSelectImpl(selectFrom.where(Conditions.just(criteria.toString())), entityType, null);
+            if (where != null) {
+                return createSelectImpl(selectFrom.where(where), entityType, null);
             } else {
                 return createSelectImpl(selectFrom, entityType, null);
             }
         }
     }
 
-    private String createSelectImpl(SelectOrdered selectFrom, Class<?> entityType, Sort sortParameter) {
-        if (sortParameter != null && sortParameter.isSorted()) {
-            RelationalPersistentEntity<?> entity = getPersistentEntity(entityType);
-            if (entity != null) {
-                Sort sort = updateMapper.getMappedObject(sortParameter, entity);
-                selectFrom =
-                    selectFrom.orderBy(createOrderByFields(Table.create(entity.getTableName()).as(EntityManager.ENTITY_ALIAS), sort));
-            }
-        }
-        return createSelect(selectFrom.build());
-    }
-
-    private RelationalPersistentEntity<?> getPersistentEntity(Class<?> entityType) {
-        return r2dbcEntityTemplate.getConverter().getMappingContext().getPersistentEntity(entityType);
+    /**
+     * Generate an actual SQL from the given {@link Select}.
+     * @param select a representation of a select statement.
+     * @return the generated SQL select.
+     */
+    public String createSelect(Select select) {
+        return sqlRenderer.render(select);
     }
 
     /**
@@ -166,15 +162,6 @@ public class EntityManager {
     }
 
     /**
-     * Generate an actual SQL from the given {@link Select}.
-     * @param select a representation of a select statement.
-     * @return the generated SQL select.
-     */
-    public String createSelect(Select select) {
-        return sqlRenderer.render(select);
-    }
-
-    /**
      * Inserts the given entity into the database - and sets the id, if it's an autoincrement field.
      * @param <S> the type of the persisted entity.
      * @param entity the entity to be inserted into the database.
@@ -191,12 +178,12 @@ public class EntityManager {
      * @param referencedIds the id of the referred entities.
      * @return the number of inserted rows.
      */
-    public Mono<Integer> updateLinkTable(LinkTable table, Long entityId, Stream<Long> referencedIds) {
+    public Mono<Integer> updateLinkTable(LinkTable table, Object entityId, Stream<?> referencedIds) {
         return deleteFromLinkTable(table, entityId)
             .then(
                 Flux
                     .fromStream(referencedIds)
-                    .flatMap((Long referenceId) -> {
+                    .flatMap((Object referenceId) -> {
                         StatementMapper.InsertSpec insert = r2dbcEntityTemplate
                             .getDataAccessStrategy()
                             .getStatementMapper()
@@ -211,7 +198,7 @@ public class EntityManager {
             );
     }
 
-    public Mono<Void> deleteFromLinkTable(LinkTable table, Long entityId) {
+    public Mono<Void> deleteFromLinkTable(LinkTable table, Object entityId) {
         Assert.notNull(entityId, "entityId is null");
         StatementMapper.DeleteSpec deleteSpec = r2dbcEntityTemplate
             .getDataAccessStrategy()
@@ -219,6 +206,22 @@ public class EntityManager {
             .createDelete(table.tableName)
             .withCriteria(Criteria.from(Criteria.where(table.idColumn).is(entityId)));
         return r2dbcEntityTemplate.getDatabaseClient().sql(statementMapper.getMappedObject(deleteSpec)).then();
+    }
+
+    private String createSelectImpl(SelectOrdered selectFrom, Class<?> entityType, Sort sortParameter) {
+        if (sortParameter != null && sortParameter.isSorted()) {
+            RelationalPersistentEntity<?> entity = getPersistentEntity(entityType);
+            if (entity != null) {
+                Sort sort = updateMapper.getMappedObject(sortParameter, entity);
+                selectFrom =
+                    selectFrom.orderBy(createOrderByFields(Table.create(entity.getTableName()).as(EntityManager.ENTITY_ALIAS), sort));
+            }
+        }
+        return createSelect(selectFrom.build());
+    }
+
+    private RelationalPersistentEntity<?> getPersistentEntity(Class<?> entityType) {
+        return r2dbcEntityTemplate.getConverter().getMappingContext().getPersistentEntity(entityType);
     }
 
     private static Collection<? extends OrderByField> createOrderByFields(Table table, Sort sortToUse) {

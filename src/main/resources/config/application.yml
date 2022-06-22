@@ -128,6 +128,22 @@ spring:
     exclude: org.springframework.boot.actuate.autoconfigure.metrics.jdbc.DataSourcePoolMetricsAutoConfiguration
   application:
     name: eRestaurantRegistry
+  cloud:
+    stream:
+      kafka:
+        binder:
+          replicationFactor: 1
+          auto-create-topics: true
+          brokers: localhost:9092
+      bindings:
+        binding-in-sse:
+          destination: sse-topic
+          content-type: text/plain
+          group: e-restaurant-registry
+        binding-out-sse:
+          destination: sse-topic
+          content-type: text/plain
+          group: e-restaurant-registry
   profiles:
     # The commented value for `active` can be replaced with valid Spring profiles to load.
     # Otherwise, it will be filled in by maven when building the JAR file
@@ -145,7 +161,6 @@ spring:
     basename: i18n/messages
   main:
     allow-bean-definition-overriding: true
-    allow-circular-references: true
   task:
     execution:
       thread-name-prefix: e-restaurant-registry-task-
@@ -172,7 +187,7 @@ spring:
           oidc:
             client-id: internal
             client-secret: internal
-            scope: openid,profile,email
+            scope: openid, profile, email, offline_access # last one for refresh tokens
 
 server:
   servlet:
@@ -225,16 +240,6 @@ jhipster:
       audience:
         - account
         - api://default
-kafka:
-  bootstrap-servers: localhost:9092
-  consumer:
-    key.deserializer: org.apache.kafka.common.serialization.StringDeserializer
-    value.deserializer: org.apache.kafka.common.serialization.StringDeserializer
-    group.id: e-restaurant-registry
-    auto.offset.reset: earliest
-  producer:
-    key.serializer: org.apache.kafka.common.serialization.StringSerializer
-    value.serializer: org.apache.kafka.common.serialization.StringSerializer
 # ===================================================================
 # Application specific properties
 # Add your own application properties here, see the ApplicationProperties class

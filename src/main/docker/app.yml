@@ -16,7 +16,7 @@ services:
       - SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_OIDC_CLIENT_SECRET=internal
       - JHIPSTER_SLEEP=30 # gives time for other services to boot before the application
       - SPRING_ELASTICSEARCH_URIS=http://erestaurantregistry-elasticsearch:9200
-      - KAFKA_BOOTSTRAPSERVERS=kafka:9092
+      - SPRING_CLOUD_STREAM_KAFKA_BINDER_BROKERS=kafka:9092
   erestaurantregistry-postgresql:
     image: postgres:14.2
     # volumes:
